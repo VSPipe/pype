@@ -3,7 +3,7 @@ import nuke
 import contextlib
 
 from avalon import api, io
-from pype.nuke import presets
+from pype.hosts.nuke import presets
 
 
 @contextlib.contextmanager
@@ -70,7 +70,7 @@ def loader_shift(node, frame, relative=True):
 class LoadSequence(api.Loader):
     """Load image sequence into Nuke"""
 
-    families = ["render2d", "source", "plate", "render"]
+    families = ["render2d", "source", "plate", "render", "prerender"]
     representations = ["exr", "dpx", "jpg", "jpeg", "png"]
 
     label = "Load sequence"
@@ -87,7 +87,7 @@ class LoadSequence(api.Loader):
         version = context['version']
         version_data = version.get("data", {})
         repr_id = context["representation"]["_id"]
-        
+
         self.log.info("version_data: {}\n".format(version_data))
         self.log.debug(
             "Representation id `{}` ".format(repr_id))
@@ -237,7 +237,7 @@ class LoadSequence(api.Loader):
 
         repr_cont = representation["context"]
 
-        file = self.fname
+        file = api.get_representation_path(representation)
 
         if not file:
             repr_id = representation["_id"]

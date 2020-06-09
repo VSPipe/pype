@@ -1,7 +1,6 @@
 import os
 import nuke
 import pyblish.api
-import pype.api as pype
 
 
 @pyblish.api.log
@@ -13,9 +12,11 @@ class CollectNukeWrites(pyblish.api.InstancePlugin):
     hosts = ["nuke", "nukeassist"]
     families = ["write"]
 
+    # preset attributes
+    sync_workfile_version = True
+
     def process(self, instance):
-        # adding 2d focused rendering
-        instance.data["families"].append("render2d")
+        families = instance.data["families"]
 
         node = None
         for x in instance:
@@ -53,10 +54,13 @@ class CollectNukeWrites(pyblish.api.InstancePlugin):
         output_dir = os.path.dirname(path)
         self.log.debug('output dir: {}'.format(output_dir))
 
-        # get version to instance for integration
-        instance.data['version'] = instance.context.data["version"]
+        if not next((f for f in families
+                     if "prerender" in f),
+                    None) and self.sync_workfile_version:
+            # get version to instance for integration
+            instance.data['version'] = instance.context.data["version"]
 
-        self.log.debug('Write Version: %s' % instance.data('version'))
+            self.log.debug('Write Version: %s' % instance.data('version'))
 
         # create label
         name = node.name()
@@ -67,15 +71,15 @@ class CollectNukeWrites(pyblish.api.InstancePlugin):
             int(last_frame)
         )
 
-        if 'render' in instance.data['families']:
+        if [fm for fm in families
+                if fm in ["render", "prerender"]]:
             if "representations" not in instance.data:
                 instance.data["representations"] = list()
 
                 representation = {
                     'name': ext,
                     'ext': ext,
-                    "stagingDir": output_dir,
-                    "anatomy_template": "render"
+                    "stagingDir": output_dir
                 }
 
             try:
@@ -95,7 +99,8 @@ class CollectNukeWrites(pyblish.api.InstancePlugin):
                     # this will only run if slate frame is not already
                     # rendered from previews publishes
                     if "slate" in instance.data["families"] \
-                            and (frame_length == collected_frames_len):
+                            and (frame_length == collected_frames_len) \
+                            and ("prerender" not in instance.data["families"]):
                         frame_slate_str = "%0{}d".format(
                             len(str(last_frame))) % (first_frame - 1)
                         slate_frame = collected_frames[0].replace(
@@ -110,7 +115,7 @@ class CollectNukeWrites(pyblish.api.InstancePlugin):
 
         # Add version data to instance
         version_data = {
-            "colorspace":  node["colorspace"].value(),
+            "colorspace": node["colorspace"].value(),
         }
 
         instance.data["family"] = "write"
@@ -124,6 +129,7 @@ class CollectNukeWrites(pyblish.api.InstancePlugin):
             deadlinePriority = group_node["deadlinePriority"].value()
 
         families = [f for f in instance.data["families"] if "write" not in f]
+
         instance.data.update({
             "versionData": version_data,
             "path": path,
@@ -143,5 +149,18 @@ class CollectNukeWrites(pyblish.api.InstancePlugin):
             "deadlineChunkSize": deadlineChunkSize,
             "deadlinePriority": deadlinePriority
         })
+
+        if "render" in families:
+            instance.data["family"] = "render2d"
+            if "render" not in families:
+                instance.data["families"].insert(0, "render")
+
+        if "prerender" in families:
+            instance.data.update({
+                "family": "prerender",
+                "families": []
+            })
+
+        self.log.debug("families: {}".format(families))
 
         self.log.debug("instance.data: {}".format(instance.data))

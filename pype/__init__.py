@@ -2,16 +2,16 @@ import os
 
 from pyblish import api as pyblish
 from avalon import api as avalon
+from .api import config, Anatomy
 from .lib import filter_pyblish_plugins
-from pypeapp import config
 
 
 import logging
 log = logging.getLogger(__name__)
 
-__version__ = "2.6.0"
 
 PROJECT_PLUGINS_PATH = os.environ.get("PYPE_PROJECT_PLUGINS")
+STUDIO_PLUGINS_PATH = os.environ.get("PYPE_STUDIO_PLUGINS")
 PACKAGE_DIR = os.path.dirname(__file__)
 PLUGINS_DIR = os.path.join(PACKAGE_DIR, "plugins")
 
@@ -84,7 +84,25 @@ def install():
                 pyblish.register_plugin_path(plugin_path)
                 avalon.register_plugin_path(avalon.Loader, plugin_path)
                 avalon.register_plugin_path(avalon.Creator, plugin_path)
+                avalon.register_plugin_path(
+                    avalon.InventoryAction, plugin_path
+                )
 
+    # Register studio specific plugins
+    if STUDIO_PLUGINS_PATH and project_name:
+        for path in STUDIO_PLUGINS_PATH.split(os.pathsep):
+            if not path:
+                continue
+            if os.path.exists(path):
+                pyblish.register_plugin_path(path)
+                avalon.register_plugin_path(avalon.Loader, path)
+                avalon.register_plugin_path(avalon.Creator, path)
+                avalon.register_plugin_path(avalon.InventoryAction, path)
+
+    if project_name:
+        anatomy = Anatomy(project_name)
+        anatomy.set_root_environments()
+        avalon.register_root(anatomy.roots)
     # apply monkey patched discover to original one
     avalon.discover = patched_discover
 

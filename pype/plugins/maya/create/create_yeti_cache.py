@@ -1,7 +1,7 @@
 from collections import OrderedDict
 
 import avalon.maya
-from pype.maya import lib
+from pype.hosts.maya import lib
 
 
 class CreateYetiCache(avalon.maya.Creator):
@@ -11,6 +11,7 @@ class CreateYetiCache(avalon.maya.Creator):
     label = "Yeti Cache"
     family = "yeticache"
     icon = "pagelines"
+    defaults = ["Main"]
 
     def __init__(self, *args, **kwargs):
         super(CreateYetiCache, self).__init__(*args, **kwargs)

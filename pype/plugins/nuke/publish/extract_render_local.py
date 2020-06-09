@@ -17,9 +17,11 @@ class NukeRenderLocal(pype.api.Extractor):
     order = pyblish.api.ExtractorOrder
     label = "Render Local"
     hosts = ["nuke"]
-    families = ["render.local"]
+    families = ["render.local", "prerender.local"]
 
     def process(self, instance):
+        families = instance.data["families"]
+
         node = None
         for x in instance:
             if x.Class() == "Write":
@@ -30,7 +32,7 @@ class NukeRenderLocal(pype.api.Extractor):
         first_frame = instance.data.get("frameStartHandle", None)
 
         # exception for slate workflow
-        if "slate" in instance.data["families"]:
+        if "slate" in families:
             first_frame -= 1
 
         last_frame = instance.data.get("frameEndHandle", None)
@@ -53,7 +55,7 @@ class NukeRenderLocal(pype.api.Extractor):
         )
 
         # exception for slate workflow
-        if "slate" in instance.data["families"]:
+        if "slate" in families:
             first_frame += 1
 
         path = node['file'].value()
@@ -69,8 +71,7 @@ class NukeRenderLocal(pype.api.Extractor):
             'ext': ext,
             'frameStart': "%0{}d".format(len(str(last_frame))) % first_frame,
             'files': collected_frames,
-            "stagingDir": out_dir,
-            "anatomy_template": "render"
+            "stagingDir": out_dir
         }
         instance.data["representations"].append(repre)
 
@@ -79,8 +80,16 @@ class NukeRenderLocal(pype.api.Extractor):
             out_dir
         ))
 
-        instance.data['family'] = 'render'
-        instance.data['families'].append('render')
+        # redefinition of families
+        if "render.local" in families:
+            instance.data['family'] = 'render2d'
+            families.remove('render.local')
+            families.insert(0, "render")
+        elif "prerender.local" in families:
+            instance.data['family'] = 'prerender'
+            families.remove('prerender.local')
+            families.insert(0, "prerender")
+        instance.data["families"] = families
 
         collections, remainder = clique.assemble(collected_frames)
         self.log.info('collections: {}'.format(str(collections)))

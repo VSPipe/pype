@@ -5,7 +5,7 @@ from avalon import io, api
 from pprint import pprint
 
 from pypeapp.lib.Terminal import Terminal
-from pypeapp import Anatomy
+from pype.api import Anatomy
 
 import shutil
 import speedcopy
@@ -46,25 +46,26 @@ class TextureCopy:
         return asset
 
     def _get_destination_path(self, asset, project):
-        root = api.registered_root()
-        PROJECT = api.Session["AVALON_PROJECT"]
+        project_name = project["name"]
         hierarchy = ""
         parents = asset['data']['parents']
         if parents and len(parents) > 0:
             hierarchy = os.path.join(*parents)
 
-        template_data = {"root": root,
-                         "project": {"name": PROJECT,
-                                     "code": project['data']['code']},
-                         "silo": asset.get('silo'),
-                         "asset": asset['name'],
-                         "family": 'texture',
-                         "subset": 'Main',
-                         "hierarchy": hierarchy}
-        anatomy = Anatomy()
-        anatomy_filled = os.path.normpath(
-            anatomy.format(template_data)['texture']['path'])
-        return anatomy_filled
+        template_data = {
+            "project": {
+                "name": project_name,
+                "code": project['data']['code']
+            },
+            "silo": asset.get('silo'),
+            "asset": asset['name'],
+            "family": 'texture',
+            "subset": 'Main',
+            "hierarchy": hierarchy
+        }
+        anatomy = Anatomy(project_name)
+        anatomy_filled = anatomy.format(template_data)
+        return anatomy_filled['texture']['path']
 
     def _get_version(self, path):
         versions = [0]

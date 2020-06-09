@@ -5,10 +5,11 @@ import sys
 import copy
 import clique
 import errno
+import six
 
 from pymongo import DeleteOne, InsertOne
 import pyblish.api
-from avalon import api, io
+from avalon import io
 from avalon.vendor import filelink
 
 # this is needed until speedcopy for linux is fixed
@@ -40,13 +41,10 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
         'name': representation name (usually the same as extension)
         'ext': file extension
     optional data
-        'anatomy_template': 'publish' or 'render', etc.
-                            template from anatomy that should be used for
-                            integrating this file. Only the first level can
-                            be specified right now.
         "frameStart"
         "frameEnd"
         'fps'
+        "data": additional metadata for each representation.
     """
 
     label = "Integrate Asset New"
@@ -64,6 +62,7 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
                 "scene",
                 "vrayproxy",
                 "render",
+                "prerender",
                 "imagesequence",
                 "review",
                 "rendersetup",
@@ -81,14 +80,18 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
                 "image"
                 "source",
                 "assembly",
-                "textures"
-                "action"
+                "fbx",
+                "textures",
+                "action",
+                "harmony.template"
                 ]
     exclude_families = ["clip"]
     db_representation_context_keys = [
         "project", "asset", "task", "subset", "version", "representation",
         "family", "hierarchy", "task", "username"
     ]
+    default_template_name = "publish"
+    template_name_profiles = None
 
     def process(self, instance):
 
@@ -261,9 +264,11 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
         # Each should be a single representation (as such, a single extension)
         representations = []
         destination_list = []
-        template_name = 'publish'
+
         if 'transfers' not in instance.data:
             instance.data['transfers'] = []
+
+        template_name = self.template_name_from_instance(instance)
 
         published_representations = {}
         for idx, repre in enumerate(instance.data["representations"]):
@@ -288,8 +293,7 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
             files = repre['files']
             if repre.get('stagingDir'):
                 stagingdir = repre['stagingDir']
-            if repre.get('anatomy_template'):
-                template_name = repre['anatomy_template']
+
             if repre.get("outputName"):
                 template_data["output"] = repre['outputName']
 
@@ -299,6 +303,8 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
             sequence_repre = isinstance(files, list)
             repre_context = None
             if sequence_repre:
+                self.log.debug(
+                    "files: {}".format(files))
                 src_collections, remainder = clique.assemble(files)
                 self.log.debug(
                     "src_tail_collections: {}".format(str(src_collections)))
@@ -326,6 +332,7 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
                     test_dest_files.append(
                         os.path.normpath(template_filled)
                     )
+                template_data["frame"] = repre_context["frame"]
 
                 self.log.debug(
                     "test_dest_files: {}".format(str(test_dest_files)))
@@ -338,9 +345,13 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
                 index_frame_start = None
 
                 if repre.get("frameStart"):
-                    frame_start_padding = (
-                        anatomy.templates["render"]["padding"]
+                    frame_start_padding = int(
+                        anatomy.templates["render"].get(
+                            "frame_padding",
+                            anatomy.templates["render"].get("padding")
+                        )
                     )
+
                     index_frame_start = int(repre.get("frameStart"))
 
                 # exception for slate workflow
@@ -366,9 +377,10 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
                         index_frame_start += 1
 
                     dst = "{0}{1}{2}".format(
-                            dst_head,
-                            dst_padding,
-                            dst_tail).replace("..", ".")
+                        dst_head,
+                        dst_padding,
+                        dst_tail
+                    ).replace("..", ".")
 
                     self.log.debug("destination: `{}`".format(dst))
                     src = os.path.join(stagingdir, src_file_name)
@@ -382,12 +394,14 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
                     if not dst_start_frame:
                         dst_start_frame = dst_padding
 
+                # Store used frame value to template data
+                template_data["frame"] = dst_start_frame
                 dst = "{0}{1}{2}".format(
                     dst_head,
                     dst_start_frame,
                     dst_tail
                 ).replace("..", ".")
-                repre['published_path'] = self.unc_convert(dst)
+                repre['published_path'] = dst
 
             else:
                 # Single file
@@ -415,7 +429,7 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
                 instance.data["transfers"].append([src, dst])
 
                 published_files.append(dst)
-                repre['published_path'] = self.unc_convert(dst)
+                repre['published_path'] = dst
                 self.log.debug("__ dst: {}".format(dst))
 
             repre["publishedFiles"] = published_files
@@ -439,13 +453,15 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
             if repre_id is None:
                 repre_id = io.ObjectId()
 
+            data = repre.get("data") or {}
+            data.update({'path': dst, 'template': template})
             representation = {
                 "_id": repre_id,
                 "schema": "pype:representation-2.0",
                 "type": "representation",
                 "parent": version_id,
                 "name": repre['name'],
-                "data": {'path': dst, 'template': template},
+                "data": data,
                 "dependencies": instance.data.get("dependencies", "").split(),
 
                 # Imprint shortcut to context
@@ -519,23 +535,6 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
             self.log.debug("Hardlinking file .. {} -> {}".format(src, dest))
             self.hardlink_file(src, dest)
 
-    def unc_convert(self, path):
-        self.log.debug("> __ path: `{}`".format(path))
-        drive, _path = os.path.splitdrive(path)
-        self.log.debug("> __ drive, _path: `{}`, `{}`".format(drive, _path))
-
-        if not os.path.exists(drive + "/"):
-            self.log.info("Converting to unc from environments ..")
-
-            path_replace = os.getenv("PYPE_STUDIO_PROJECTS_PATH")
-            path_mount = os.getenv("PYPE_STUDIO_PROJECTS_MOUNT")
-
-            if "/" in path_mount:
-                path = path.replace(path_mount[0:-1], path_replace)
-            else:
-                path = path.replace(path_mount, path_replace)
-        return path
-
     def copy_file(self, src, dst):
         """ Copy given source to destination
 
@@ -545,8 +544,6 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
         Returns:
             None
         """
-        src = self.unc_convert(src)
-        dst = self.unc_convert(dst)
         src = os.path.normpath(src)
         dst = os.path.normpath(dst)
         self.log.debug("Copying file .. {} -> {}".format(src, dst))
@@ -562,15 +559,17 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
 
         # copy file with speedcopy and check if size of files are simetrical
         while True:
-            copyfile(src, dst)
+            try:
+                copyfile(src, dst)
+            except OSError as e:
+                self.log.critical("Cannot copy {} to {}".format(src, dst))
+                self.log.critical(e)
+                six.reraise(*sys.exc_info())
             if str(getsize(src)) in str(getsize(dst)):
                 break
 
     def hardlink_file(self, src, dst):
         dirname = os.path.dirname(dst)
-
-        src = self.unc_convert(src)
-        dst = self.unc_convert(dst)
 
         try:
             os.makedirs(dirname)
@@ -603,7 +602,7 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
                 "name": subset_name,
                 "data": {
                     "families": instance.data.get('families')
-                    },
+                },
                 "parent": asset["_id"]
             }).inserted_id
 
@@ -656,26 +655,35 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
             families.append(instance_family)
         families += current_families
 
-        self.log.debug("Registered root: {}".format(api.registered_root()))
         # create relative source path for DB
-        try:
-            source = instance.data['source']
-        except KeyError:
+        if "source" in instance.data:
+            source = instance.data["source"]
+        else:
             source = context.data["currentFile"]
-            source = source.replace(os.getenv("PYPE_STUDIO_PROJECTS_MOUNT"),
-                                    api.registered_root())
-            relative_path = os.path.relpath(source, api.registered_root())
-            source = os.path.join("{root}", relative_path).replace("\\", "/")
+            anatomy = instance.context.data["anatomy"]
+            success, rootless_path = (
+                anatomy.find_root_template_from_path(source)
+            )
+            if success:
+                source = rootless_path
+            else:
+                self.log.warning((
+                    "Could not find root path for remapping \"{}\"."
+                    " This may cause issues on farm."
+                ).format(source))
 
         self.log.debug("Source: {}".format(source))
-        version_data = {"families": families,
-                        "time": context.data["time"],
-                        "author": context.data["user"],
-                        "source": source,
-                        "comment": context.data.get("comment"),
-                        "machine": context.data.get("machine"),
-                        "fps": context.data.get(
-                            "fps", instance.data.get("fps"))}
+        version_data = {
+            "families": families,
+            "time": context.data["time"],
+            "author": context.data["user"],
+            "source": source,
+            "comment": context.data.get("comment"),
+            "machine": context.data.get("machine"),
+            "fps": context.data.get(
+                "fps", instance.data.get("fps")
+            )
+        }
 
         intent_value = instance.context.data.get("intent")
         if intent_value and isinstance(intent_value, dict):
@@ -694,3 +702,70 @@ class IntegrateAssetNew(pyblish.api.InstancePlugin):
                 version_data[key] = instance.data[key]
 
         return version_data
+
+    def main_family_from_instance(self, instance):
+        """Returns main family of entered instance."""
+        family = instance.data.get("family")
+        if not family:
+            family = instance.data["families"][0]
+        return family
+
+    def template_name_from_instance(self, instance):
+        template_name = self.default_template_name
+        if not self.template_name_profiles:
+            self.log.debug((
+                "Template name profiles are not set."
+                " Using default \"{}\""
+            ).format(template_name))
+            return template_name
+
+        # Task name from session?
+        task_name = io.Session.get("AVALON_TASK")
+        family = self.main_family_from_instance(instance)
+
+        matching_profiles = None
+        highest_value = -1
+        self.log.info(self.template_name_profiles)
+        for name, filters in self.template_name_profiles.items():
+            value = 0
+            families = filters.get("families")
+            if families:
+                if family not in families:
+                    continue
+                value += 1
+
+            tasks = filters.get("tasks")
+            if tasks:
+                if task_name not in tasks:
+                    continue
+                value += 1
+
+            if value > highest_value:
+                matching_profiles = {}
+                highest_value = value
+
+            if value == highest_value:
+                matching_profiles[name] = filters
+
+        if len(matching_profiles) == 1:
+            template_name = tuple(matching_profiles.keys())[0]
+            self.log.debug(
+                "Using template name \"{}\".".format(template_name)
+            )
+
+        elif len(matching_profiles) > 1:
+            template_name = tuple(matching_profiles.keys())[0]
+            self.log.warning((
+                "More than one template profiles matched"
+                " Family \"{}\" and Task: \"{}\"."
+                " Using first template name in row \"{}\"."
+            ).format(family, task_name, template_name))
+
+        else:
+            self.log.debug((
+                "None of template profiles matched"
+                " Family \"{}\" and Task: \"{}\"."
+                " Using default template name \"{}\""
+            ).format(family, task_name, template_name))
+
+        return template_name

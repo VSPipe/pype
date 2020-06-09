@@ -4,7 +4,7 @@ import glob
 
 from maya import cmds
 import pyblish.api
-import pype.maya.lib as lib
+from pype.hosts.maya import lib
 
 SHAPE_ATTRS = ["castsShadows",
                "receiveShadows",
@@ -250,7 +250,8 @@ class CollectLook(pyblish.api.InstancePlugin):
 
             # Remove sets that didn't have any members assigned in the end
             # Thus the data will be limited to only what we need.
-            if not sets[objset]["members"]:
+            self.log.info("objset {}".format(sets[objset]))
+            if not sets[objset]["members"] or (not objset.endswith("SG")):
                 self.log.info("Removing redundant set information: "
                               "%s" % objset)
                 sets.pop(objset, None)
@@ -276,7 +277,13 @@ class CollectLook(pyblish.api.InstancePlugin):
         if looksets:
             for look in looksets:
                 for at in shaderAttrs:
-                    con = cmds.listConnections("{}.{}".format(look, at))
+                    try:
+                        con = cmds.listConnections("{}.{}".format(look, at))
+                    except ValueError:
+                        # skip attributes that are invalid in current
+                        # context. For example in the case where
+                        # Arnold is not enabled.
+                        continue
                     if con:
                         materials.extend(con)
 

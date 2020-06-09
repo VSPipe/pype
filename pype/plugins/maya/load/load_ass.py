@@ -1,11 +1,11 @@
 from avalon import api
-import pype.maya.plugin
+import pype.hosts.maya.plugin
 import os
-from pypeapp import config
+from pype.api import config
 import clique
 
 
-class AssProxyLoader(pype.maya.plugin.ReferenceLoader):
+class AssProxyLoader(pype.hosts.maya.plugin.ReferenceLoader):
     """Load the Proxy"""
 
     families = ["ass"]
@@ -16,7 +16,7 @@ class AssProxyLoader(pype.maya.plugin.ReferenceLoader):
     icon = "code-fork"
     color = "orange"
 
-    def process_reference(self, context, name, namespace, data):
+    def process_reference(self, context, name, namespace, options):
 
         import maya.cmds as cmds
         from avalon import maya
@@ -164,7 +164,7 @@ class AssStandinLoader(api.Loader):
     icon = "code-fork"
     color = "orange"
 
-    def load(self, context, name, namespace, data):
+    def load(self, context, name, namespace, options):
 
         import maya.cmds as cmds
         import avalon.maya.lib as lib

@@ -4,7 +4,7 @@ from maya import cmds
 
 import avalon.maya
 import pype.api
-from pype.maya.lib import extract_alembic
+from pype.hosts.maya.lib import extract_alembic
 
 
 class ExtractAnimation(pype.api.Extractor):
@@ -56,7 +56,8 @@ class ExtractAnimation(pype.api.Extractor):
             "writeCreases": True,
             "uvWrite": True,
             "selection": True,
-            "worldSpace": instance.data.get("worldSpace", True)
+            "worldSpace": instance.data.get("worldSpace", True),
+            "writeColorSets": instance.data.get("writeColorSets", False)
         }
 
         if not instance.data.get("includeParentHierarchy", True):
