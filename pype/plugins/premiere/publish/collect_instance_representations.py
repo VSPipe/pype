@@ -12,7 +12,7 @@ class CollectClipRepresentations(pyblish.api.InstancePlugin):
     """
 
     label = "Collect Clip Representations"
-    order = pyblish.api.CollectorOrder
+    order = pyblish.api.CollectorOrder + 0.1
     families = ['clip']
 
     def process(self, instance):
@@ -53,7 +53,7 @@ class CollectClipRepresentations(pyblish.api.InstancePlugin):
                 "fps": fps,
                 "name": json_repr_subset,
                 "ext": json_repr_ext,
-                "tags": ["review", "delete"]
+                "tags": ["review", "passing", "ftrackreview"]
             }
         else:
             representation = {

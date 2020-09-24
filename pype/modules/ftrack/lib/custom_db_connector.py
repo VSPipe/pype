@@ -9,9 +9,11 @@ import time
 import logging
 import functools
 import atexit
+import os
 
 # Third-party dependencies
 import pymongo
+from pype.api import decompose_url
 
 
 class NotActiveTable(Exception):
@@ -39,7 +41,7 @@ def auto_reconnect(func):
 
 
 def check_active_table(func):
-    """Check if DbConnector has active table before db method is called"""
+    """Check if CustomDbConnector has active collection."""
     @functools.wraps(func)
     def decorated(obj, *args, **kwargs):
         if not obj.active_table:
@@ -48,28 +50,30 @@ def check_active_table(func):
     return decorated
 
 
-def check_active_table(func):
-    """Handling auto reconnect in 3 retry times"""
-    @functools.wraps(func)
-    def decorated(obj, *args, **kwargs):
-        if not obj.active_table:
-            raise NotActiveTable("Active table is not set. (This is bug)")
-        return func(obj, *args, **kwargs)
-
-    return decorated
-
-
-class DbConnector:
+class CustomDbConnector:
     log = logging.getLogger(__name__)
-    timeout = 1000
+    timeout = int(os.environ["AVALON_TIMEOUT"])
 
-    def __init__(self, mongo_url, database_name, table_name=None):
+    def __init__(
+        self, uri, database_name, port=None, table_name=None
+    ):
         self._mongo_client = None
         self._sentry_client = None
         self._sentry_logging_handler = None
         self._database = None
         self._is_installed = False
-        self._mongo_url = mongo_url
+
+        self._uri = uri
+        components = decompose_url(uri)
+        if port is None:
+            port = components.get("port")
+
+        if database_name is None:
+            raise ValueError(
+                "Database is not defined for connection. {}".format(uri)
+            )
+
+        self._port = port
         self._database_name = database_name
 
         self.active_table = table_name
@@ -82,7 +86,7 @@ class DbConnector:
         # not all methods of PyMongo database are implemented with this it is
         # possible to use them too
         try:
-            return super(DbConnector, self).__getattribute__(attr)
+            return super(CustomDbConnector, self).__getattribute__(attr)
         except AttributeError:
             if self.active_table is None:
                 raise NotActiveTable()
@@ -95,10 +99,16 @@ class DbConnector:
         atexit.register(self.uninstall)
         logging.basicConfig()
 
-        self._mongo_client = pymongo.MongoClient(
-            self._mongo_url,
-            serverSelectionTimeoutMS=self.timeout
-        )
+        kwargs = {
+            "host": self._uri,
+            "serverSelectionTimeoutMS": self.timeout
+        }
+        if self._port is not None:
+            kwargs["port"] = self._port
+
+        self._mongo_client = pymongo.MongoClient(**kwargs)
+        if self._port is None:
+            self._port = self._mongo_client.PORT
 
         for retry in range(3):
             try:
@@ -113,11 +123,11 @@ class DbConnector:
         else:
             raise IOError(
                 "ERROR: Couldn't connect to %s in "
-                "less than %.3f ms" % (self._mongo_url, self.timeout)
+                "less than %.3f ms" % (self._uri, self.timeout)
             )
 
         self.log.info("Connected to %s, delay %.3f s" % (
-            self._mongo_url, time.time() - t1
+            self._uri, time.time() - t1
         ))
 
         self._database = self._mongo_client[self._database_name]

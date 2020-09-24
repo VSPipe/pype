@@ -1,3 +1,7 @@
+from .settings import (
+    system_settings,
+    project_settings
+)
 from pypeapp import (
     Logger,
     Anatomy,
@@ -5,6 +9,14 @@ from pypeapp import (
     config,
     execute
 )
+
+from pypeapp.lib.mongo import (
+    decompose_url,
+    compose_url,
+    get_default_components
+)
+
+from . import resources
 
 from .plugin import (
     Extractor,
@@ -30,19 +42,31 @@ from .lib import (
     get_hierarchy,
     get_subsets,
     get_version_from_path,
+    get_last_version_from_path,
     modified_environ,
-    add_tool_to_environment
+    add_tool_to_environment,
+    source_hash,
+    get_latest_version
 )
 
 # Special naming case for subprocess since its a built-in method.
 from .lib import _subprocess as subprocess
 
 __all__ = [
+    "system_settings",
+    "project_settings",
+
     "Logger",
     "Anatomy",
     "project_overrides_dir_path",
     "config",
     "execute",
+    "decompose_url",
+    "compose_url",
+    "get_default_components",
+
+    # Resources
+    "resources",
 
     # plugin classes
     "Extractor",
@@ -67,8 +91,11 @@ __all__ = [
     "get_asset",
     "get_subsets",
     "get_version_from_path",
+    "get_last_version_from_path",
     "modified_environ",
     "add_tool_to_environment",
+    "source_hash",
 
-    "subprocess"
+    "subprocess",
+    "get_latest_version"
 ]

@@ -29,18 +29,14 @@ import pyblish
 
 from . import settings, util
 from .awesome import tags as awesome
-from .vendor import Qt
-from .vendor.Qt import QtCore, QtGui
-from .vendor.six import text_type
-from .vendor.six.moves import queue
+import Qt
+from Qt import QtCore, QtGui
+from six import text_type
 from .vendor import qtawesome
 from .constants import PluginStates, InstanceStates, GroupStates, Roles
 
-try:
-    from pypeapp import config
-    get_presets = config.get_presets
-except Exception:
-    get_presets = dict
+from pype.api import config
+
 
 # ItemTypes
 InstanceType = QtGui.QStandardItem.UserType
@@ -52,6 +48,7 @@ TerminalDetailType = QtGui.QStandardItem.UserType + 4
 
 class QAwesomeTextIconFactory:
     icons = {}
+
     @classmethod
     def icon(cls, icon_name):
         if icon_name not in cls.icons:
@@ -61,6 +58,7 @@ class QAwesomeTextIconFactory:
 
 class QAwesomeIconFactory:
     icons = {}
+
     @classmethod
     def icon(cls, icon_name, icon_color):
         if icon_name not in cls.icons:
@@ -106,12 +104,11 @@ class IntentModel(QtGui.QStandardItemModel):
         self.default_index = 0
 
         intents_preset = (
-            get_presets()
-            .get("tools", {})
-            .get("pyblish", {})
-            .get("ui", {})
-            .get("intents", {})
+            config.get_presets()
+            .get("global", {})
+            .get("intent", {})
         )
+
         default = intents_preset.get("default")
         items = intents_preset.get("items", {})
         if not items:
@@ -321,7 +318,7 @@ class PluginItem(QtGui.QStandardItem):
                 return False
             self.plugin.active = value
             self.emitDataChanged()
-            return True
+            return
 
         elif role == Roles.PluginActionProgressRole:
             if isinstance(value, list):
@@ -443,9 +440,6 @@ class PluginModel(QtGui.QStandardItemModel):
         if label is None:
             label = "Other"
 
-        if order is None:
-            order = 99999999999999
-
         group_item = self.group_items.get(label)
         if not group_item:
             group_item = GroupItem(label, order=order)
@@ -492,12 +486,8 @@ class PluginModel(QtGui.QStandardItemModel):
         new_records = result.get("records") or []
         if not has_warning:
             for record in new_records:
-                if not hasattr(record, "levelname"):
-                    continue
-
-                if str(record.levelname).lower() in [
-                    "warning", "critical", "error"
-                ]:
+                level_no = record.get("levelno")
+                if level_no and level_no >= 30:
                     new_flag_states[PluginStates.HasWarning] = True
                     break
 
@@ -658,14 +648,14 @@ class InstanceItem(QtGui.QStandardItem):
     def setData(self, value, role=(QtCore.Qt.UserRole + 1)):
         if role == QtCore.Qt.CheckStateRole:
             if not self.data(Roles.IsEnabledRole):
-                return False
+                return
             self.instance.data["publish"] = value
             self.emitDataChanged()
-            return True
+            return
 
         if role == Roles.IsEnabledRole:
             if not self.instance.optional:
-                return False
+                return
 
         if role == Roles.PublishFlagsRole:
             if isinstance(value, list):
@@ -698,12 +688,12 @@ class InstanceItem(QtGui.QStandardItem):
 
             self.instance._publish_states = value
             self.emitDataChanged()
-            return True
+            return
 
         if role == Roles.LogRecordsRole:
             self.instance._logs = value
             self.emitDataChanged()
-            return True
+            return
 
         return super(InstanceItem, self).setData(value, role)
 
@@ -791,12 +781,8 @@ class InstanceModel(QtGui.QStandardItemModel):
         new_records = result.get("records") or []
         if not has_warning:
             for record in new_records:
-                if not hasattr(record, "levelname"):
-                    continue
-
-                if str(record.levelname).lower() in [
-                    "warning", "critical", "error"
-                ]:
+                level_no = record.get("levelno")
+                if level_no and level_no >= 30:
                     new_flag_states[InstanceStates.HasWarning] = True
                     break
 
@@ -884,13 +870,18 @@ class ArtistProxy(QtCore.QAbstractProxyModel):
         self.rowsInserted.emit(self.parent(), new_from, new_to + 1)
 
     def _remove_rows(self, parent_row, from_row, to_row):
-        removed_rows = []
         increment_num = self.mapping_from[parent_row][from_row]
+
+        to_end_index = len(self.mapping_from[parent_row]) - 1
+        for _idx in range(0, parent_row):
+            to_end_index += len(self.mapping_from[_idx])
+
+        removed_rows = 0
         _emit_last = None
         for row_num in reversed(range(from_row, to_row + 1)):
             row = self.mapping_from[parent_row].pop(row_num)
             _emit_last = row
-            removed_rows.append(row)
+            removed_rows += 1
 
         _emit_first = int(increment_num)
         mapping_from_len = len(self.mapping_from)
@@ -910,11 +901,8 @@ class ArtistProxy(QtCore.QAbstractProxyModel):
                     self.mapping_from[idx_i][idx_j] = increment_num
                     increment_num += 1
 
-        first_to_row = None
-        for row in removed_rows:
-            if first_to_row is None:
-                first_to_row = row
-            self.mapping_to.pop(row)
+        for idx in range(removed_rows):
+            self.mapping_to.pop(to_end_index - idx)
 
         return (_emit_first, _emit_last)
 
@@ -1012,7 +1000,7 @@ class ArtistProxy(QtCore.QAbstractProxyModel):
         return QtCore.QModelIndex()
 
 
-class TerminalModel(QtGui.QStandardItemModel):
+class TerminalDetailItem(QtGui.QStandardItem):
     key_label_record_map = (
         ("instance", "Instance"),
         ("msg", "Message"),
@@ -1025,135 +1013,23 @@ class TerminalModel(QtGui.QStandardItemModel):
         ("msecs", "Millis")
     )
 
-    item_icon_name = {
-        "info": "fa.info",
-        "record": "fa.circle",
-        "error": "fa.exclamation-triangle",
-    }
+    def __init__(self, record_item):
+        self.record_item = record_item
+        self.msg = None
+        msg = record_item.get("msg")
+        if msg is None:
+            msg = record_item["label"].split("\n")[0]
 
-    item_icon_colors = {
-        "info": "#ffffff",
-        "error": "#ff4a4a",
-        "log_debug": "#ff66e8",
-        "log_info": "#66abff",
-        "log_warning": "#ffba66",
-        "log_error": "#ff4d58",
-        "log_critical": "#ff4f75",
-        None: "#333333"
-    }
+        super(TerminalDetailItem, self).__init__(msg)
 
-    level_to_record = (
-        (10, "log_debug"),
-        (20, "log_info"),
-        (30, "log_warning"),
-        (40, "log_error"),
-        (50, "log_critical")
+    def data(self, role=QtCore.Qt.DisplayRole):
+        if role in (QtCore.Qt.DisplayRole, QtCore.Qt.EditRole):
+            if self.msg is None:
+                self.msg = self.compute_detail_text(self.record_item)
+            return self.msg
+        return super(TerminalDetailItem, self).data(role)
 
-    )
-
-    def __init__(self, *args, **kwargs):
-        super(TerminalModel, self).__init__(*args, **kwargs)
-        self.reset()
-
-    def reset(self):
-        self.items_to_set_widget = queue.Queue()
-        self.clear()
-
-    def prepare_records(self, result):
-        prepared_records = []
-        instance_name = None
-        instance = result["instance"]
-        if instance is not None:
-            instance_name = instance.data["name"]
-
-        for record in result.get("records") or []:
-            if isinstance(record, dict):
-                record_item = record
-            else:
-                record_item = {
-                    "label": text_type(record.msg),
-                    "type": "record",
-                    "levelno": record.levelno,
-                    "threadName": record.threadName,
-                    "name": record.name,
-                    "filename": record.filename,
-                    "pathname": record.pathname,
-                    "lineno": record.lineno,
-                    "msg": text_type(record.msg),
-                    "msecs": record.msecs,
-                    "levelname": record.levelname
-                }
-
-            if instance_name is not None:
-                record_item["instance"] = instance_name
-
-            prepared_records.append(record_item)
-
-        error = result.get("error")
-        if error:
-            fname, line_no, func, exc = error.traceback
-            error_item = {
-                "label": str(error),
-                "type": "error",
-                "filename": str(fname),
-                "lineno": str(line_no),
-                "func": str(func),
-                "traceback": error.formatted_traceback,
-            }
-
-            if instance_name is not None:
-                error_item["instance"] = instance_name
-
-            prepared_records.append(error_item)
-
-        return prepared_records
-
-    def append(self, record_item):
-        record_type = record_item["type"]
-
-        terminal_item_type = None
-        if record_type == "record":
-            for level, _type in self.level_to_record:
-                if level > record_item["levelno"]:
-                    break
-                terminal_item_type = _type
-
-        else:
-            terminal_item_type = record_type
-
-        icon_color = self.item_icon_colors.get(terminal_item_type)
-        icon_name = self.item_icon_name.get(record_type)
-
-        top_item_icon = None
-        if icon_color and icon_name:
-            top_item_icon = QAwesomeIconFactory.icon(icon_name, icon_color)
-
-        label = record_item["label"].split("\n")[0]
-
-        top_item = QtGui.QStandardItem()
-        top_item.setData(TerminalLabelType, Roles.TypeRole)
-        top_item.setData(terminal_item_type, Roles.TerminalItemTypeRole)
-        top_item.setData(label, QtCore.Qt.DisplayRole)
-        top_item.setFlags(
-            QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
-        )
-
-        if top_item_icon:
-            top_item.setData(top_item_icon, QtCore.Qt.DecorationRole)
-
-        self.appendRow(top_item)
-
-        detail_text = self.prepare_detail_text(record_item)
-        detail_item = QtGui.QStandardItem(detail_text)
-        detail_item.setData(TerminalDetailType, Roles.TypeRole)
-        top_item.appendRow(detail_item)
-        self.items_to_set_widget.put(detail_item)
-
-    def update_with_result(self, result):
-        for record in result["records"]:
-            self.append(record)
-
-    def prepare_detail_text(self, item_data):
+    def compute_detail_text(self, item_data):
         if item_data["type"] == "info":
             return item_data["label"]
 
@@ -1185,6 +1061,138 @@ class TerminalModel(QtGui.QStandardItemModel):
             html_text
         )
         return html_text
+
+
+class TerminalModel(QtGui.QStandardItemModel):
+    item_icon_name = {
+        "info": "fa.info",
+        "record": "fa.circle",
+        "error": "fa.exclamation-triangle",
+    }
+
+    item_icon_colors = {
+        "info": "#ffffff",
+        "error": "#ff4a4a",
+        "log_debug": "#ff66e8",
+        "log_info": "#66abff",
+        "log_warning": "#ffba66",
+        "log_error": "#ff4d58",
+        "log_critical": "#ff4f75",
+        None: "#333333"
+    }
+
+    level_to_record = (
+        (10, "log_debug"),
+        (20, "log_info"),
+        (30, "log_warning"),
+        (40, "log_error"),
+        (50, "log_critical")
+
+    )
+
+    def __init__(self, *args, **kwargs):
+        super(TerminalModel, self).__init__(*args, **kwargs)
+        self.reset()
+
+    def reset(self):
+        self.clear()
+
+    def prepare_records(self, result, suspend_logs):
+        prepared_records = []
+        instance_name = None
+        instance = result["instance"]
+        if instance is not None:
+            instance_name = instance.data["name"]
+
+        if not suspend_logs:
+            for record in result.get("records") or []:
+                if isinstance(record, dict):
+                    record_item = record
+                else:
+                    record_item = {
+                        "label": text_type(record.msg),
+                        "type": "record",
+                        "levelno": record.levelno,
+                        "threadName": record.threadName,
+                        "name": record.name,
+                        "filename": record.filename,
+                        "pathname": record.pathname,
+                        "lineno": record.lineno,
+                        "msg": text_type(record.msg),
+                        "msecs": record.msecs,
+                        "levelname": record.levelname
+                    }
+
+                if instance_name is not None:
+                    record_item["instance"] = instance_name
+
+                prepared_records.append(record_item)
+
+        error = result.get("error")
+        if error:
+            fname, line_no, func, exc = error.traceback
+            error_item = {
+                "label": str(error),
+                "type": "error",
+                "filename": str(fname),
+                "lineno": str(line_no),
+                "func": str(func),
+                "traceback": error.formatted_traceback,
+            }
+
+            if instance_name is not None:
+                error_item["instance"] = instance_name
+
+            prepared_records.append(error_item)
+
+        return prepared_records
+
+    def append(self, record_items):
+        all_record_items = []
+        for record_item in record_items:
+            record_type = record_item["type"]
+
+            terminal_item_type = None
+            if record_type == "record":
+                for level, _type in self.level_to_record:
+                    if level > record_item["levelno"]:
+                        break
+                    terminal_item_type = _type
+
+            else:
+                terminal_item_type = record_type
+
+            icon_color = self.item_icon_colors.get(terminal_item_type)
+            icon_name = self.item_icon_name.get(record_type)
+
+            top_item_icon = None
+            if icon_color and icon_name:
+                top_item_icon = QAwesomeIconFactory.icon(icon_name, icon_color)
+
+            label = record_item["label"].split("\n")[0]
+
+            top_item = QtGui.QStandardItem()
+            all_record_items.append(top_item)
+
+            detail_item = TerminalDetailItem(record_item)
+            top_item.appendRow(detail_item)
+
+            top_item.setData(TerminalLabelType, Roles.TypeRole)
+            top_item.setData(terminal_item_type, Roles.TerminalItemTypeRole)
+            top_item.setData(label, QtCore.Qt.DisplayRole)
+            top_item.setFlags(
+                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+            )
+
+            if top_item_icon:
+                top_item.setData(top_item_icon, QtCore.Qt.DecorationRole)
+
+            detail_item.setData(TerminalDetailType, Roles.TypeRole)
+
+        self.invisibleRootItem().appendRows(all_record_items)
+
+    def update_with_result(self, result):
+        self.append(result["records"])
 
 
 class TerminalProxy(QtCore.QSortFilterProxyModel):

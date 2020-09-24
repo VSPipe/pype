@@ -7,8 +7,8 @@ import numbers
 import copy
 import collections
 
-from .vendor.Qt import QtCore
-from .vendor.six import text_type
+from Qt import QtCore
+from six import text_type
 import pyblish.api
 
 root = os.path.dirname(__file__)
@@ -309,3 +309,12 @@ class OrderGroups:
             return group_range
 
         return float(group_range)
+
+
+def env_variable_to_bool(env_key):
+    value = os.environ.get(env_key)
+    if value is not None:
+        value = value.lower()
+        if value in ("true", "1", "yes"):
+            return True
+    return False

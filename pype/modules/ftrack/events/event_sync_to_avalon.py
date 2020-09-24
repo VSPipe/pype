@@ -14,17 +14,17 @@ from avalon import schema
 
 from pype.modules.ftrack.lib import avalon_sync
 from pype.modules.ftrack.lib.avalon_sync import (
-    CustAttrIdKey, CustAttrAutoSync, EntitySchemas
+    CUST_ATTR_ID_KEY, CUST_ATTR_AUTO_SYNC, EntitySchemas
 )
 import ftrack_api
 from pype.modules.ftrack import BaseEvent
 
-from pype.modules.ftrack.lib.io_nonsingleton import DbConnector
+from avalon.api import AvalonMongoDB
 
 
 class SyncToAvalonEvent(BaseEvent):
 
-    dbcon = DbConnector()
+    dbcon = AvalonMongoDB()
 
     interest_entTypes = ["show", "task"]
     ignore_ent_types = ["Milestone"]
@@ -45,6 +45,7 @@ class SyncToAvalonEvent(BaseEvent):
         " where project_id is \"{}\" and name in ({})"
     )
     created_entities = []
+    report_splitter = {"type": "label", "value": "---"}
 
     def __init__(self, session, plugins_presets={}):
         '''Expects a ftrack_api.Session instance'''
@@ -102,7 +103,7 @@ class SyncToAvalonEvent(BaseEvent):
     @property
     def avalon_cust_attrs(self):
         if self._avalon_cust_attrs is None:
-            self._avalon_cust_attrs = avalon_sync.get_avalon_attr(
+            self._avalon_cust_attrs = avalon_sync.get_pype_attr(
                 self.process_session
             )
         return self._avalon_cust_attrs
@@ -219,7 +220,7 @@ class SyncToAvalonEvent(BaseEvent):
     def avalon_custom_attributes(self):
         """Return info about changeability of entity and it's parents."""
         if self._avalon_custom_attributes is None:
-            self._avalon_custom_attributes = avalon_sync.get_avalon_attr(
+            self._avalon_custom_attributes = avalon_sync.get_pype_attr(
                 self.process_session
             )
         return self._avalon_custom_attributes
@@ -556,10 +557,10 @@ class SyncToAvalonEvent(BaseEvent):
                 continue
 
             changes = ent_info["changes"]
-            if CustAttrAutoSync not in changes:
+            if CUST_ATTR_AUTO_SYNC not in changes:
                 continue
 
-            auto_sync = changes[CustAttrAutoSync]["new"]
+            auto_sync = changes[CUST_ATTR_AUTO_SYNC]["new"]
             if auto_sync == "1":
                 # Trigger sync to avalon action if auto sync was turned on
                 ft_project = self.cur_project
@@ -592,16 +593,16 @@ class SyncToAvalonEvent(BaseEvent):
 
         ft_project = self.cur_project
         # Check if auto-sync custom attribute exists
-        if CustAttrAutoSync not in ft_project["custom_attributes"]:
+        if CUST_ATTR_AUTO_SYNC not in ft_project["custom_attributes"]:
             # TODO should we sent message to someone?
             self.log.error((
                 "Custom attribute \"{}\" is not created or user \"{}\" used"
                 " for Event server don't have permissions to access it!"
-            ).format(CustAttrAutoSync, self.session.api_user))
+            ).format(CUST_ATTR_AUTO_SYNC, self.session.api_user))
             return True
 
         # Skip if auto-sync is not set
-        auto_sync = ft_project["custom_attributes"][CustAttrAutoSync]
+        auto_sync = ft_project["custom_attributes"][CUST_ATTR_AUTO_SYNC]
         if auto_sync is not True:
             return True
 
@@ -716,6 +717,9 @@ class SyncToAvalonEvent(BaseEvent):
         if not self.ftrack_removed:
             return
         ent_infos = self.ftrack_removed
+        self.log.debug(
+            "Processing removed entities: {}".format(str(ent_infos))
+        )
         removable_ids = []
         recreate_ents = []
         removed_names = []
@@ -843,7 +847,7 @@ class SyncToAvalonEvent(BaseEvent):
 
                     new_entity["custom_attributes"][key] = val
 
-                new_entity["custom_attributes"][CustAttrIdKey] = (
+                new_entity["custom_attributes"][CUST_ATTR_ID_KEY] = (
                     str(avalon_entity["_id"])
                 )
                 ent_path = self.get_ent_path(new_entity_id)
@@ -877,8 +881,9 @@ class SyncToAvalonEvent(BaseEvent):
                 self.process_session.commit()
 
                 found_idx = None
-                for idx, _entity in enumerate(self._avalon_ents):
-                    if _entity["_id"] == avalon_entity["_id"]:
+                proj_doc, asset_docs = self._avalon_ents
+                for idx, asset_doc in enumerate(asset_docs):
+                    if asset_doc["_id"] == avalon_entity["_id"]:
                         found_idx = idx
                         break
 
@@ -893,7 +898,8 @@ class SyncToAvalonEvent(BaseEvent):
                     new_entity_id
                 )
                 # Update cached entities
-                self._avalon_ents[found_idx] = avalon_entity
+                asset_docs[found_idx] = avalon_entity
+                self._avalon_ents = proj_doc, asset_docs
 
                 if self._avalon_ents_by_id is not None:
                     mongo_id = avalon_entity["_id"]
@@ -1096,7 +1102,7 @@ class SyncToAvalonEvent(BaseEvent):
                 continue
             final_entity["data"][key] = val
 
-        _mongo_id_str = cust_attrs.get(CustAttrIdKey)
+        _mongo_id_str = cust_attrs.get(CUST_ATTR_ID_KEY)
         if _mongo_id_str:
             try:
                 _mongo_id = ObjectId(_mongo_id_str)
@@ -1157,15 +1163,17 @@ class SyncToAvalonEvent(BaseEvent):
             self.log.debug("Entity was synchronized <{}>".format(ent_path))
 
         mongo_id_str = str(mongo_id)
-        if mongo_id_str != ftrack_ent["custom_attributes"][CustAttrIdKey]:
-            ftrack_ent["custom_attributes"][CustAttrIdKey] = mongo_id_str
+        if mongo_id_str != ftrack_ent["custom_attributes"][CUST_ATTR_ID_KEY]:
+            ftrack_ent["custom_attributes"][CUST_ATTR_ID_KEY] = mongo_id_str
             try:
                 self.process_session.commit()
             except Exception:
                 self.process_session.rolback()
                 # TODO logging
                 # TODO report
-                error_msg = "Failed to store MongoID to entity's custom attribute"
+                error_msg = (
+                    "Failed to store MongoID to entity's custom attribute"
+                )
                 report_msg = (
                     "{}||SyncToAvalon action may solve this issue"
                 ).format(error_msg)
@@ -1244,7 +1252,7 @@ class SyncToAvalonEvent(BaseEvent):
             self.process_session, entity, hier_keys, defaults
         )
         for key, val in hier_values.items():
-            if key == CustAttrIdKey:
+            if key == CUST_ATTR_ID_KEY:
                 continue
             output[key] = val
 
@@ -1254,6 +1262,10 @@ class SyncToAvalonEvent(BaseEvent):
         ent_infos = self.ftrack_renamed
         if not ent_infos:
             return
+
+        self.log.debug(
+            "Processing renamed entities: {}".format(str(ent_infos))
+        )
 
         renamed_tasks = {}
         not_found = {}
@@ -1449,6 +1461,10 @@ class SyncToAvalonEvent(BaseEvent):
         ent_infos = self.ftrack_added
         if not ent_infos:
             return
+
+        self.log.debug(
+            "Processing added entities: {}".format(str(ent_infos))
+        )
 
         cust_attrs, hier_attrs = self.avalon_cust_attrs
         entity_type_conf_ids = {}
@@ -1686,7 +1702,7 @@ class SyncToAvalonEvent(BaseEvent):
         if "_hierarchical" not in temp_dict:
             hier_mongo_id_configuration_id = None
             for attr in hier_attrs:
-                if attr["key"] == CustAttrIdKey:
+                if attr["key"] == CUST_ATTR_ID_KEY:
                     hier_mongo_id_configuration_id = attr["id"]
                     break
             temp_dict["_hierarchical"] = hier_mongo_id_configuration_id
@@ -1703,7 +1719,7 @@ class SyncToAvalonEvent(BaseEvent):
 
         for attr in cust_attrs:
             key = attr["key"]
-            if key != CustAttrIdKey:
+            if key != CUST_ATTR_ID_KEY:
                 continue
 
             if attr["entity_type"] != ent_info["entityType"]:
@@ -1725,6 +1741,10 @@ class SyncToAvalonEvent(BaseEvent):
     def process_moved(self):
         if not self.ftrack_moved:
             return
+
+        self.log.debug(
+            "Processing moved entities: {}".format(str(self.ftrack_moved))
+        )
 
         ftrack_moved = {k: v for k, v in sorted(
             self.ftrack_moved.items(),
@@ -1855,6 +1875,10 @@ class SyncToAvalonEvent(BaseEvent):
         # Only custom attributes changes should get here
         if not self.ftrack_updated:
             return
+
+        self.log.debug(
+            "Processing updated entities: {}".format(str(self.ftrack_updated))
+        )
 
         ent_infos = self.ftrack_updated
         ftrack_mongo_mapping = {}

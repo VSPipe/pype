@@ -8,8 +8,9 @@ an active window manager; such as via Travis-CI.
 import os
 import sys
 import traceback
+import inspect
 
-from .vendor.Qt import QtCore
+from Qt import QtCore
 
 import pyblish.api
 import pyblish.util
@@ -19,10 +20,8 @@ import pyblish.version
 
 from . import util
 from .constants import InstanceStates
-try:
-    from pypeapp.config import get_presets
-except Exception:
-    get_presets = dict
+
+from pype.api import config
 
 
 class IterationBreak(Exception):
@@ -62,11 +61,15 @@ class Controller(QtCore.QObject):
     # store OrderGroups - now it is a singleton
     order_groups = util.OrderGroups
 
+    # When instance is toggled
+    instance_toggled = QtCore.Signal(object, object, object)
+
     def __init__(self, parent=None):
         super(Controller, self).__init__(parent)
         self.context = None
         self.plugins = {}
         self.optional_default = {}
+        self.instance_toggled.connect(self._on_instance_toggled)
 
     def reset_variables(self):
         # Data internal to the GUI itself
@@ -83,7 +86,6 @@ class Controller(QtCore.QObject):
         # - passing collectors order disables plugin/instance toggle
         self.collectors_order = None
         self.collect_state = 0
-        self.collected = False
 
         # - passing validators order disables validate button and gives ability
         #   to know when to stop on validate button press
@@ -114,7 +116,7 @@ class Controller(QtCore.QObject):
 
     def presets_by_hosts(self):
         # Get global filters as base
-        presets = get_presets().get("plugins", {})
+        presets = config.get_presets().get("plugins", {})
         if not presets:
             return {}
 
@@ -181,7 +183,18 @@ class Controller(QtCore.QObject):
         plugins = pyblish.api.discover()
 
         targets = pyblish.logic.registered_targets() or ["default"]
-        self.plugins = pyblish.logic.plugins_by_targets(plugins, targets)
+        plugins_by_targets = pyblish.logic.plugins_by_targets(plugins, targets)
+
+        _plugins = []
+        for plugin in plugins_by_targets:
+            # Skip plugin if is not optional and not active
+            if (
+                not getattr(plugin, "optional", False)
+                and not getattr(plugin, "active", True)
+            ):
+                continue
+            _plugins.append(plugin)
+        self.plugins = _plugins
 
     def on_published(self):
         if self.is_running:
@@ -237,6 +250,8 @@ class Controller(QtCore.QObject):
                 self.processing["current_group_order"] is not None
                 and plugin.order > self.processing["current_group_order"]
             ):
+                current_group_order = self.processing["current_group_order"]
+
                 new_next_group_order = None
                 new_current_group_order = self.processing["next_group_order"]
                 if new_current_group_order is not None:
@@ -257,12 +272,13 @@ class Controller(QtCore.QObject):
                 if self.collect_state == 0:
                     self.collect_state = 1
                     self.switch_toggleability.emit(True)
-                    self.passed_group.emit(new_current_group_order)
+                    self.passed_group.emit(current_group_order)
                     yield IterationBreak("Collected")
 
-                self.passed_group.emit(new_current_group_order)
-                if self.errored:
-                    yield IterationBreak("Last group errored")
+                else:
+                    self.passed_group.emit(current_group_order)
+                    if self.errored:
+                        yield IterationBreak("Last group errored")
 
             if self.collect_state == 1:
                 self.collect_state = 2
@@ -304,6 +320,11 @@ class Controller(QtCore.QObject):
                             "%s was inactive, skipping.." % instance
                         )
                         continue
+                    # Stop if was stopped
+                    if self.stopped:
+                        self.stopped = False
+                        yield IterationBreak("Stopped")
+
                     yield (plugin, instance)
             else:
                 families = util.collect_families_from_instances(
@@ -412,3 +433,19 @@ class Controller(QtCore.QObject):
 
         for plugin in self.plugins:
             del(plugin)
+
+    def _on_instance_toggled(self, instance, old_value, new_value):
+        callbacks = pyblish.api.registered_callbacks().get("instanceToggled")
+        if not callbacks:
+            return
+
+        for callback in callbacks:
+            try:
+                callback(instance, old_value, new_value)
+            except Exception:
+                print(
+                    "Callback for `instanceToggled` crashed. {}".format(
+                        os.path.abspath(inspect.getfile(callback))
+                    )
+                )
+                traceback.print_exception(*sys.exc_info())

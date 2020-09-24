@@ -1,6 +1,6 @@
-import getpass
-from Qt import QtCore, QtWidgets, QtGui
-from .models import LogModel
+from Qt import QtCore, QtWidgets
+from avalon.vendor import qtawesome
+from .models import LogModel, LogsFilterProxy
 
 
 class SearchComboBox(QtWidgets.QComboBox):
@@ -50,37 +50,6 @@ class SearchComboBox(QtWidgets.QComboBox):
         return text
 
 
-class CheckableComboBox2(QtWidgets.QComboBox):
-    def __init__(self, parent=None):
-        super(CheckableComboBox, self).__init__(parent)
-        self.view().pressed.connect(self.handleItemPressed)
-        self._changed = False
-
-    def handleItemPressed(self, index):
-        item = self.model().itemFromIndex(index)
-        if item.checkState() == QtCore.Qt.Checked:
-            item.setCheckState(QtCore.Qt.Unchecked)
-        else:
-            item.setCheckState(QtCore.Qt.Checked)
-        self._changed = True
-
-    def hidePopup(self):
-        if not self._changed:
-            super(CheckableComboBox, self).hidePopup()
-        self._changed = False
-
-    def itemChecked(self, index):
-        item = self.model().item(index, self.modelColumn())
-        return item.checkState() == QtCore.Qt.Checked
-
-    def setItemChecked(self, index, checked=True):
-        item = self.model().item(index, self.modelColumn())
-        if checked:
-            item.setCheckState(QtCore.Qt.Checked)
-        else:
-            item.setCheckState(QtCore.Qt.Unchecked)
-
-
 class SelectableMenu(QtWidgets.QMenu):
 
     selection_changed = QtCore.Signal()
@@ -97,7 +66,6 @@ class SelectableMenu(QtWidgets.QMenu):
 class CustomCombo(QtWidgets.QWidget):
 
     selection_changed = QtCore.Signal()
-    checked_changed = QtCore.Signal(bool)
 
     def __init__(self, title, parent=None):
         super(CustomCombo, self).__init__(parent)
@@ -126,195 +94,77 @@ class CustomCombo(QtWidgets.QWidget):
         self.toolmenu.clear()
         self.addItems(items)
 
-    def select_items(self, items, ignore_input=False):
-        if not isinstance(items, list):
-            items = [items]
-
-        for action in self.toolmenu.actions():
-            check = True
-            if (
-                action.text() in items and ignore_input or
-                action.text() not in items and not ignore_input
-            ):
-                check = False
-
-            action.setChecked(check)
-
     def addItems(self, items):
         for item in items:
             action = self.toolmenu.addAction(item)
             action.setCheckable(True)
-            self.toolmenu.addAction(action)
             action.setChecked(True)
-            action.triggered.connect(self.checked_changed)
+            self.toolmenu.addAction(action)
 
     def items(self):
         for action in self.toolmenu.actions():
             yield action
 
 
-class CheckableComboBox(QtWidgets.QComboBox):
-    def __init__(self, parent=None):
-        super(CheckableComboBox, self).__init__(parent)
-
-        view = QtWidgets.QTreeView()
-        view.header().hide()
-        view.setRootIsDecorated(False)
-
-        model = QtGui.QStandardItemModel()
-
-        view.pressed.connect(self.handleItemPressed)
-        self._changed = False
-
-        self.setView(view)
-        self.setModel(model)
-
-        self.view = view
-        self.model = model
-
-    def handleItemPressed(self, index):
-        item = self.model.itemFromIndex(index)
-        if item.checkState() == QtCore.Qt.Checked:
-            item.setCheckState(QtCore.Qt.Unchecked)
-        else:
-            item.setCheckState(QtCore.Qt.Checked)
-        self._changed = True
-
-    def hidePopup(self):
-        if not self._changed:
-            super(CheckableComboBox, self).hidePopup()
-        self._changed = False
-
-    def itemChecked(self, index):
-        item = self.model.item(index, self.modelColumn())
-        return item.checkState() == QtCore.Qt.Checked
-
-    def setItemChecked(self, index, checked=True):
-        item = self.model.item(index, self.modelColumn())
-        if checked:
-            item.setCheckState(QtCore.Qt.Checked)
-        else:
-            item.setCheckState(QtCore.Qt.Unchecked)
-
-    def addItems(self, items):
-        for text, checked in items:
-            text_item = QtGui.QStandardItem(text)
-            checked_item = QtGui.QStandardItem()
-            checked_item.setData(
-                QtCore.QVariant(checked), QtCore.Qt.CheckStateRole
-            )
-            self.model.appendRow([text_item, checked_item])
-
-
-class FilterLogModel(QtCore.QSortFilterProxyModel):
-    sub_dict = ["$gt", "$lt", "$not"]
-    def __init__(self, key_values, parent=None):
-        super(FilterLogModel, self).__init__(parent)
-        self.allowed_key_values = key_values
-
-    def filterAcceptsRow(self, row, parent):
-        """
-        Reimplemented from base class.
-        """
-        model = self.sourceModel()
-        for key, values in self.allowed_key_values.items():
-            col_indx = model.COLUMNS.index(key)
-            value = model.index(row, col_indx, parent).data(
-                QtCore.Qt.DisplayRole
-            )
-            if value not in values:
-                return False
-        return True
-
-
 class LogsWidget(QtWidgets.QWidget):
     """A widget that lists the published subsets for an asset"""
 
-    active_changed = QtCore.Signal()
-
-    _level_order = [
-        "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
-    ]
-
-    def __init__(self, parent=None):
+    def __init__(self, detail_widget, parent=None):
         super(LogsWidget, self).__init__(parent=parent)
 
         model = LogModel()
+        proxy_model = LogsFilterProxy()
+        proxy_model.setSourceModel(model)
+        proxy_model.col_usernames = model.COLUMNS.index("username")
 
         filter_layout = QtWidgets.QHBoxLayout()
 
+        # user_filter = SearchComboBox(self, "Users")
         user_filter = CustomCombo("Users", self)
-        users = model.dbcon.distinct("user")
+        users = model.dbcon.distinct("username")
         user_filter.populate(users)
-        user_filter.checked_changed.connect(self.user_changed)
-        user_filter.select_items(getpass.getuser())
+        user_filter.selection_changed.connect(self._user_changed)
+
+        proxy_model.update_users_filter(users)
 
         level_filter = CustomCombo("Levels", self)
+        # levels = [(level, True) for level in model.dbcon.distinct("level")]
         levels = model.dbcon.distinct("level")
-        _levels = []
-        for level in self._level_order:
-            if level in levels:
-                _levels.append(level)
-        level_filter.populate(_levels)
-        level_filter.checked_changed.connect(self.level_changed)
+        level_filter.addItems(levels)
+        level_filter.selection_changed.connect(self._level_changed)
 
-        # date_from_label = QtWidgets.QLabel("From:")
-        # date_filter_from = QtWidgets.QDateTimeEdit()
-        #
-        # date_from_layout = QtWidgets.QVBoxLayout()
-        # date_from_layout.addWidget(date_from_label)
-        # date_from_layout.addWidget(date_filter_from)
-        #
-        # date_to_label = QtWidgets.QLabel("To:")
-        # date_filter_to = QtWidgets.QDateTimeEdit()
-        #
-        # date_to_layout = QtWidgets.QVBoxLayout()
-        # date_to_layout.addWidget(date_to_label)
-        # date_to_layout.addWidget(date_filter_to)
+        detail_widget.update_level_filter(levels)
+
+        spacer = QtWidgets.QWidget()
+
+        icon = qtawesome.icon("fa.refresh", color="white")
+        refresh_btn = QtWidgets.QPushButton(icon, "")
 
         filter_layout.addWidget(user_filter)
         filter_layout.addWidget(level_filter)
-        filter_layout.setAlignment(QtCore.Qt.AlignLeft)
-
-        # filter_layout.addLayout(date_from_layout)
-        # filter_layout.addLayout(date_to_layout)
+        filter_layout.addWidget(spacer, 1)
+        filter_layout.addWidget(refresh_btn)
 
         view = QtWidgets.QTreeView(self)
         view.setAllColumnsShowFocus(True)
+        view.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(filter_layout)
         layout.addWidget(view)
 
+        view.setModel(proxy_model)
+
         view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         view.setSortingEnabled(True)
         view.sortByColumn(
-            model.COLUMNS.index("timestamp"),
-            QtCore.Qt.AscendingOrder
+            model.COLUMNS.index("started"),
+            QtCore.Qt.DescendingOrder
         )
 
-        key_val = {
-            "user": users,
-            "level": levels
-        }
-        proxy_model = FilterLogModel(key_val, view)
-        proxy_model.setSourceModel(model)
-        view.setModel(proxy_model)
-
-        view.customContextMenuRequested.connect(self.on_context_menu)
-        view.selectionModel().selectionChanged.connect(self.active_changed)
-
-        # WARNING this is cool but slows down widget a lot
-        # header = view.header()
-        # # Enforce the columns to fit the data (purely cosmetic)
-        # if Qt.__binding__ in ("PySide2", "PyQt5"):
-        #     header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        # else:
-        #     header.setResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-
-        # prepare
-        model.refresh()
+        view.selectionModel().selectionChanged.connect(self._on_index_change)
+        refresh_btn.clicked.connect(self._on_refresh_clicked)
 
         # Store to memory
         self.model = model
@@ -324,24 +174,40 @@ class LogsWidget(QtWidgets.QWidget):
         self.user_filter = user_filter
         self.level_filter = level_filter
 
-    def user_changed(self):
-        valid_actions = []
+        self.detail_widget = detail_widget
+        self.refresh_btn = refresh_btn
+
+        # prepare
+        self.refresh()
+
+    def refresh(self):
+        self.model.refresh()
+        self.detail_widget.refresh()
+
+    def _on_refresh_clicked(self):
+        self.refresh()
+
+    def _on_index_change(self, to_index, from_index):
+        index = self._selected_log()
+        if index:
+            logs = index.data(self.model.ROLE_LOGS)
+        else:
+            logs = []
+        self.detail_widget.set_detail(logs)
+
+    def _user_changed(self):
+        checked_values = set()
         for action in self.user_filter.items():
             if action.isChecked():
-                valid_actions.append(action.text())
+                checked_values.add(action.text())
+        self.proxy_model.update_users_filter(checked_values)
 
-        self.proxy_model.allowed_key_values["user"] = valid_actions
-        self.proxy_model.invalidate()
-
-    def level_changed(self):
-        valid_actions = []
+    def _level_changed(self):
+        checked_values = set()
         for action in self.level_filter.items():
             if action.isChecked():
-                valid_actions.append(action.text())
-
-        self.proxy_model.allowed_key_values["level"] = valid_actions
-        self.proxy_model.invalidate()
-
+                checked_values.add(action.text())
+        self.detail_widget.update_level_filter(checked_values)
 
     def on_context_menu(self, point):
         # TODO will be any actions? it's ready
@@ -355,68 +221,111 @@ class LogsWidget(QtWidgets.QWidget):
         selection = self.view.selectionModel()
         rows = selection.selectedRows(column=0)
 
-    def selected_log(self):
+    def _selected_log(self):
         selection = self.view.selectionModel()
         rows = selection.selectedRows(column=0)
         if len(rows) == 1:
             return rows[0]
-
         return None
 
 
-class LogDetailWidget(QtWidgets.QWidget):
-    """A Widget that display information about a specific version"""
-    data_rows = [
-        "user",
-        "message",
-        "level",
-        "logname",
-        "method",
-        "module",
-        "fileName",
-        "lineNumber",
-        "host",
-        "timestamp"
-    ]
-
-    html_text = u"""
-<h3>{user} - {timestamp}</h3>
-<b>User</b><br>{user}<br>
-<br><b>Level</b><br>{level}<br>
-<br><b>Message</b><br>{message}<br>
-<br><b>Log Name</b><br>{logname}<br><br><b>Method</b><br>{method}<br>
-<br><b>File</b><br>{fileName}<br>
-<br><b>Line</b><br>{lineNumber}<br>
-<br><b>Host</b><br>{host}<br>
-<br><b>Timestamp</b><br>{timestamp}<br>
-"""
-
+class OutputWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
-        super(LogDetailWidget, self).__init__(parent=parent)
-
+        super(OutputWidget, self).__init__(parent=parent)
         layout = QtWidgets.QVBoxLayout(self)
 
-        label = QtWidgets.QLabel("Detail")
-        detail_widget = QtWidgets.QTextEdit()
-        detail_widget.setReadOnly(True)
-        layout.addWidget(label)
-        layout.addWidget(detail_widget)
+        show_timecode_checkbox = QtWidgets.QCheckBox("Show timestamp")
 
-        self.detail_widget = detail_widget
+        output_text = QtWidgets.QTextEdit()
+        output_text.setReadOnly(True)
+        # output_text.setLineWrapMode(QtWidgets.QTextEdit.FixedPixelWidth)
 
-        self.setEnabled(True)
+        layout.addWidget(show_timecode_checkbox)
+        layout.addWidget(output_text)
 
-        self.set_detail(None)
+        show_timecode_checkbox.stateChanged.connect(
+            self.on_show_timecode_change
+        )
+        self.setLayout(layout)
+        self.output_text = output_text
+        self.show_timecode_checkbox = show_timecode_checkbox
 
-    def set_detail(self, detail_data):
-        if not detail_data:
-            self.detail_widget.setText("")
+        self.refresh()
+
+    def refresh(self):
+        self.set_detail()
+
+    def show_timecode(self):
+        return self.show_timecode_checkbox.isChecked()
+
+    def on_show_timecode_change(self):
+        self.set_detail(self.las_logs)
+
+    def update_level_filter(self, levels):
+        self.filter_levels = set()
+        for level in levels or tuple():
+            self.filter_levels.add(level.lower())
+
+        self.set_detail(self.las_logs)
+
+    def add_line(self, line):
+        self.output_text.append(line)
+
+    def set_detail(self, logs=None):
+        self.las_logs = logs
+        self.output_text.clear()
+        if not logs:
             return
 
-        data = dict()
-        for row in self.data_rows:
-            value = detail_data.get(row) or "< Not set >"
-            data[row] = value
+        show_timecode = self.show_timecode()
+        for log in logs:
+            level = log["level"].lower()
+            if level not in self.filter_levels:
+                continue
 
+            line_f = "<font color=\"White\">{message}"
+            if level == "debug":
+                line_f = (
+                    "<font color=\"Yellow\"> -"
+                    " <font color=\"Lime\">{{  {loggerName}  }}: ["
+                    " <font color=\"White\">{message}"
+                    " <font color=\"Lime\">]"
+                )
+            elif level == "info":
+                line_f = (
+                    "<font color=\"Lime\">>>> ["
+                    " <font color=\"White\">{message}"
+                    " <font color=\"Lime\">]"
+                )
+            elif level == "warning":
+                line_f = (
+                    "<font color=\"Yellow\">*** WRN:"
+                    " <font color=\"Lime\"> >>> {{ {loggerName} }}: ["
+                    " <font color=\"White\">{message}"
+                    " <font color=\"Lime\">]"
+                )
+            elif level == "error":
+                line_f = (
+                    "<font color=\"Red\">!!! ERR:"
+                    " <font color=\"White\">{timestamp}"
+                    " <font color=\"Lime\">>>> {{ {loggerName} }}: ["
+                    " <font color=\"White\">{message}"
+                    " <font color=\"Lime\">]"
+                )
 
-        self.detail_widget.setHtml(self.html_text.format(**data))
+            exc = log.get("exception")
+            if exc:
+                log["message"] = exc["message"]
+
+            line = line_f.format(**log)
+
+            if show_timecode:
+                timestamp = log["timestamp"]
+                line = timestamp.strftime("%Y-%d-%m %H:%M:%S") + " " + line
+
+            self.add_line(line)
+
+            if not exc:
+                continue
+            for _line in exc["stackTrace"].split("\n"):
+                self.add_line(_line)

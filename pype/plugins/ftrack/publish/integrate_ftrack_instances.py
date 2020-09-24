@@ -30,7 +30,8 @@ class IntegrateFtrackInstance(pyblish.api.InstancePlugin):
                       'audio': 'audio',
                       'workfile': 'scene',
                       'animation': 'cache',
-                      'image': 'img'
+                      'image': 'img',
+                      'reference': 'reference'
                       }
 
     def process(self, instance):
@@ -44,10 +45,14 @@ class IntegrateFtrackInstance(pyblish.api.InstancePlugin):
 
         family = instance.data['family'].lower()
 
-        asset_type = ''
-        asset_type = instance.data.get(
-            "ftrackFamily", self.family_mapping[family]
-        )
+        asset_type = instance.data.get("ftrackFamily")
+        if not asset_type and family in self.family_mapping:
+            asset_type = self.family_mapping[family]
+
+        # Ignore this instance if neither "ftrackFamily" or a family mapping is
+        # found.
+        if not asset_type:
+            return
 
         componentList = []
         ft_session = instance.context.data["ftrackSession"]
@@ -83,8 +88,14 @@ class IntegrateFtrackInstance(pyblish.api.InstancePlugin):
                         instance.data["frameEnd"] - instance.data["frameStart"]
                     )
 
-                if not comp.get('fps'):
-                    comp['fps'] = instance.context.data['fps']
+                fps = comp.get('fps')
+                if fps is None:
+                    fps = instance.data.get(
+                        "fps", instance.context.data['fps']
+                    )
+
+                comp['fps'] = fps
+
                 location = self.get_ftrack_location(
                     'ftrack.server', ft_session
                 )
